@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, initial-scale=1.0">
+		<title>V2_AIMEDS</title>
+		<style>
+html, body, #canvas {
+	margin: 0;
+	padding: 0;
+	border: 0;
+}
+
+body {
+	color: white;
+	background-color: black;
+	overflow: hidden;
+	touch-action: none;
+}
+
+#canvas {
+	display: block;
+}
+
+#canvas:focus {
+	outline: none;
+}
+
+#status, #status-splash, #status-progress {
+	position: absolute;
+	left: 0;
+	right: 0;
+}
+
+#status, #status-splash {
+	top: 0;
+	bottom: 0;
+}
+
+#status {
+	background-color: #242424;
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	align-items: center;
+	visibility: hidden;
+}
+
+#status-splash {
+	max-height: 100%;
+	max-width: 100%;
+	margin: auto;
+}
+
+#status-splash.show-image--false {
+	display: none;
+}
+
+#status-splash.fullsize--true {
+	height: 100%;
+	width: 100%;
+	object-fit: contain;
+}
+
+#status-splash.use-filter--false {
+	image-rendering: pixelated;
+}
+
+#status-progress, #status-notice {
+	display: none;
+}
+
+#status-progress {
+	bottom: 10%;
+	width: 50%;
+	margin: 0 auto;
+}
+
+#status-notice {
+	background-color: #5b3943;
+	border-radius: 0.5rem;
+	border: 1px solid #9b3943;
+	color: #e0e0e0;
+	font-family: 'Noto Sans', 'Droid Sans', Arial, sans-serif;
+	line-height: 1.3;
+	margin: 0 2rem;
+	overflow: hidden;
+	padding: 1rem;
+	text-align: center;
+	z-index: 1;
+}
+		</style>
+		<link id="-gd-engine-icon" rel="icon" type="image/png" href="index.icon.png" />
+<link rel="apple-touch-icon" href="index.apple-touch-icon.png"/>
+
+	<!-- AIMEDS Google login shell -----------------------------------------------
+     Injected into build/web/index.html by scripts/deploy_web.sh AFTER every
+     Godot export. Godot regenerates index.html from its template each time it
+     exports, so hand-editing the built file works exactly once and then
+     silently reverts — which is why this lives outside build/.
+
+     What it does:
+       1. Covers the page with a sign-in card.
+       2. Lets the wasm download start in parallel, so the ~62 MB payload is
+          fetching while the student signs in.
+       3. On success, stores the access token on window.AIMEDS_TOKEN and
+          reveals the canvas. AuthBridge.gd reads that variable on every
+          Supabase request, so a silent token refresh is picked up
+          automatically — important, because the whole attempt uploads at the
+          END of a case, when a token minted at launch may have expired.
+
+     Godot never receives the email or the Google display name: those are
+     written server-side by the on_auth_user_created trigger.
+-->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  /* Palette and plate geometry taken from levels/main_menu.gd::_style_menu()
+     and ui/profile/name_entry.gd, so the sign-in card, the nickname screen and
+     the title menu read as one continuous flow rather than three designs.
+
+       --ink    #0A171F  C_INK     page ground
+       --deep   #0F2138  C_DEEP    plate fill
+       --mint   #A8C3BA  C_MINT    the AIMEDS+ logotype, and the primary button
+       --teal   #305A69  C_TEAL    its drop shadow, used for borders
+       --cyan   #73D9E6  C_CYAN    background glow, used for headings and focus
+       --text   #DBF0EE  C_TEXT
+       --dim    #99B8BF  C_DIM
+
+     Plates are 2px border, 6px corners everywhere — same as the menu buttons.
+     No amber: main_menu.gd notes it is the in-case accent and nothing in the
+     title flow should use it. */
+  #aimeds-login {
+    --ink:#0A171F; --deep:#0F2138; --mint:#A8C3BA; --teal:#305A69;
+    --cyan:#73D9E6; --text:#DBF0EE; --dim:#99B8BF;
+    position: fixed; inset: 0; z-index: 9999;
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+    background:
+      radial-gradient(ellipse at 50% 38%, rgba(115,217,230,.10), transparent 62%),
+      var(--ink);
+    color: var(--dim);
+    font-family: system-ui, -apple-system, "Segoe UI", "Noto Sans Thai", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  #aimeds-login .card {
+    background: var(--deep);
+    border: 2px solid var(--cyan);
+    border-radius: 6px;
+    padding: 34px 38px;
+    text-align: center;
+    max-width: 430px; width: 100%;
+    box-shadow: 0 0 0 1px rgba(10,23,31,.6), 0 18px 50px rgba(0,0,0,.55);
+  }
+  /* Wordmark: mint over a teal offset shadow, echoing the title art. */
+  #aimeds-login h1 {
+    color: var(--mint);
+    font-size: 34px; letter-spacing: .10em; font-weight: 700;
+    margin: 0 0 14px;
+    text-shadow: 2px 2px 0 var(--teal);
+  }
+  #aimeds-login h1 span { color: var(--cyan); }
+  #aimeds-login p { font-size: 14.5px; line-height: 1.6; margin: 0 0 24px; }
+  #aimeds-login button {
+    display: block; width: 100%;
+    background: var(--mint); color: var(--ink);
+    border: 2px solid var(--teal); border-radius: 6px;
+    padding: 13px 26px; font: inherit; font-size: 17px; font-weight: 600;
+    cursor: pointer; transition: background .12s, border-color .12s;
+  }
+  #aimeds-login button:hover:not(:disabled) {
+    background: #BCD3CB; border-color: var(--cyan);
+  }
+  #aimeds-login button:disabled { opacity: .45; cursor: default; }
+  #aimeds-login .err {
+    color: #C56B6B; font-size: 13px; min-height: 18px; margin: 14px 0 0;
+  }
+  #aimeds-login .foot { font-size: 12px; margin: 18px 0 0; color: #6E8A93; }
+  #aimeds-login .foot a { color: var(--dim); }
+</style>
+<script>
+  // Publishable key: safe to ship. Row Level Security is what protects the
+  // data, not key secrecy. The secret key must never appear here.
+  window.AIMEDS_SUPABASE_URL = "https://rzvndjptswwzeorggsig.supabase.co";
+  window.AIMEDS_SUPABASE_KEY = "sb_publishable_d9FQDSVO4S7LR6HoirrUDA_IOHjrfWg";
+  window.AIMEDS_TOKEN = "";
+  window.AIMEDS_SIGNED_IN = false;
+</script>
+
+</head>
+	<body>
+		<canvas id="canvas">
+			Your browser does not support the canvas tag.
+		</canvas>
+
+		<noscript>
+			Your browser does not support JavaScript.
+		</noscript>
+
+		<div id="status">
+			<img id="status-splash" class="show-image--true fullsize--true use-filter--true" src="index.png" alt="">
+			<progress id="status-progress"></progress>
+			<div id="status-notice"></div>
+		</div>
+
+		<script src="index.js"></script>
+		<script>
+const GODOT_CONFIG = {"args":[],"canvasResizePolicy":2,"ensureCrossOriginIsolationHeaders":true,"executable":"index","experimentalVK":false,"fileSizes":{"index.pck":28401200,"index.wasm":43699190},"focusCanvas":true,"gdextensionLibs":[]};
+const GODOT_THREADS_ENABLED = false;
+const engine = new Engine(GODOT_CONFIG);
+
+(function () {
+	const statusOverlay = document.getElementById('status');
+	const statusProgress = document.getElementById('status-progress');
+	const statusNotice = document.getElementById('status-notice');
+
+	let initializing = true;
+	let statusMode = '';
+
+	function setStatusMode(mode) {
+		if (statusMode === mode || !initializing) {
+			return;
+		}
+		if (mode === 'hidden') {
+			statusOverlay.remove();
+			initializing = false;
+			return;
+		}
+		statusOverlay.style.visibility = 'visible';
+		statusProgress.style.display = mode === 'progress' ? 'block' : 'none';
+		statusNotice.style.display = mode === 'notice' ? 'block' : 'none';
+		statusMode = mode;
+	}
+
+	function setStatusNotice(text) {
+		while (statusNotice.lastChild) {
+			statusNotice.removeChild(statusNotice.lastChild);
+		}
+		const lines = text.split('\n');
+		lines.forEach((line) => {
+			statusNotice.appendChild(document.createTextNode(line));
+			statusNotice.appendChild(document.createElement('br'));
+		});
+	}
+
+	function displayFailureNotice(err) {
+		console.error(err);
+		if (err instanceof Error) {
+			setStatusNotice(err.message);
+		} else if (typeof err === 'string') {
+			setStatusNotice(err);
+		} else {
+			setStatusNotice('An unknown error occurred.');
+		}
+		setStatusMode('notice');
+		initializing = false;
+	}
+
+	const missing = Engine.getMissingFeatures({
+		threads: GODOT_THREADS_ENABLED,
+	});
+
+	if (missing.length !== 0) {
+		if (GODOT_CONFIG['serviceWorker'] && GODOT_CONFIG['ensureCrossOriginIsolationHeaders'] && 'serviceWorker' in navigator) {
+			let serviceWorkerRegistrationPromise;
+			try {
+				serviceWorkerRegistrationPromise = navigator.serviceWorker.getRegistration();
+			} catch (err) {
+				serviceWorkerRegistrationPromise = Promise.reject(new Error('Service worker registration failed.'));
+			}
+			// There's a chance that installing the service worker would fix the issue
+			Promise.race([
+				serviceWorkerRegistrationPromise.then((registration) => {
+					if (registration != null) {
+						return Promise.reject(new Error('Service worker already exists.'));
+					}
+					return registration;
+				}).then(() => engine.installServiceWorker()),
+				// For some reason, `getRegistration()` can stall
+				new Promise((resolve) => {
+					setTimeout(() => resolve(), 2000);
+				}),
+			]).then(() => {
+				// Reload if there was no error.
+				window.location.reload();
+			}).catch((err) => {
+				console.error('Error while registering service worker:', err);
+			});
+		} else {
+			// Display the message as usual
+			const missingMsg = 'Error\nThe following features required to run Godot projects on the Web are missing:\n';
+			displayFailureNotice(missingMsg + missing.join('\n'));
+		}
+	} else {
+		setStatusMode('progress');
+		engine.startGame({
+			'onProgress': function (current, total) {
+				if (current > 0 && total > 0) {
+					statusProgress.value = current;
+					statusProgress.max = total;
+				} else {
+					statusProgress.removeAttribute('value');
+					statusProgress.removeAttribute('max');
+				}
+			},
+		}).then(() => {
+			setStatusMode('hidden');
+		}, displayFailureNotice);
+	}
+}());
+		</script>
+	<!-- AIMEDS login overlay + auth wiring. Injected just before </body>. -->
+<div id="aimeds-login">
+  <div class="card">
+    <h1>AIMEDS<span>+</span></h1>
+    <p>Sign in with your Google account to play.<br>
+       ลงชื่อเข้าใช้ด้วยบัญชี Google เพื่อเริ่มเล่น</p>
+    <button id="aimeds-signin">Sign in with Google</button>
+    <p class="err" id="aimeds-error"></p>
+    <p class="foot">
+      Your results are recorded for research ·
+      <a href="privacy.html">Privacy</a> ·
+      <a href="terms.html">Terms</a>
+    </p>
+  </div>
+</div>
+
+<script>
+(function () {
+  var client = window.supabase.createClient(
+    window.AIMEDS_SUPABASE_URL,
+    window.AIMEDS_SUPABASE_KEY
+  );
+
+  var overlay = document.getElementById("aimeds-login");
+  var button  = document.getElementById("aimeds-signin");
+  var errorEl = document.getElementById("aimeds-error");
+
+  function publish(session) {
+    // AuthBridge.gd reads these on EVERY request rather than caching, so a
+    // background refresh here is picked up by Godot immediately.
+    window.AIMEDS_TOKEN     = session ? session.access_token : "";
+    window.AIMEDS_SIGNED_IN = !!session;
+  }
+
+  function reveal() {
+    if (overlay) { overlay.style.display = "none"; }
+
+    // Force Godot to re-measure the canvas.
+    //
+    // The export sets `#canvas { display: block; }` with no width or height —
+    // Godot's "Adaptive" canvas_resize_policy sizes the canvas from JS at boot
+    // and then ONLY in response to window resize events. This overlay is
+    // position:fixed over the canvas while the wasm boots, and hiding it fires
+    // no such event, so any size Godot computed during boot is kept forever.
+    //
+    // Two frames, because the first fires before the browser has finished
+    // reflowing the now-hidden overlay and can report the stale size.
+    requestAnimationFrame(function () {
+      window.dispatchEvent(new Event("resize"));
+      requestAnimationFrame(function () {
+        window.dispatchEvent(new Event("resize"));
+      });
+    });
+  }
+
+  // Fires on initial load, on sign-in, and on every silent token refresh.
+  client.auth.onAuthStateChange(function (_event, session) {
+    publish(session);
+    if (session) { reveal(); }
+  });
+
+  client.auth.getSession().then(function (res) {
+    var session = res && res.data ? res.data.session : null;
+    publish(session);
+    // Returning players skip the card entirely — they signed in once and the
+    // session is stored in the browser.
+    if (session) { reveal(); }
+  });
+
+  // Called from Godot (main_menu.gd::_on_sign_out_pressed) via JavaScriptBridge.
+  //
+  // Sign-out has to happen HERE, not in GDScript. supabase-js owns the session
+  // and persists it in the browser; clearing window.AIMEDS_TOKEN alone would
+  // leave the real session alive, so the next reload would sign the same person
+  // straight back in — the opposite of what someone pressing SIGN OUT on a
+  // shared machine wants.
+  //
+  // The page is reloaded afterwards rather than just re-showing the card,
+  // because Godot holds per-user state in memory (the cached nickname, the
+  // ChoiceLogger buffer). A clean boot is the only way to guarantee student #2
+  // does not inherit any of student #1's session.
+  window.aimedsSignOut = function () {
+    client.auth.signOut().then(function () {
+      publish(null);
+      window.location.reload();
+    }).catch(function () {
+      // Even if the network call fails, the local session is gone; reloading
+      // still lands the next person on the sign-in card.
+      window.location.reload();
+    });
+  };
+
+  // --- Fullscreen -------------------------------------------------------
+  //
+  // Godot's own DisplayServer fullscreen does not work from the web export, so
+  // the request has to be made here, on the real document element.
+  //
+  // AIMEDS_FS_SUPPORTED is published so the game can HIDE its fullscreen button
+  // where the API does not exist. That is not a rare edge case: iPhone Safari
+  // has never supported the Fullscreen API, and a visible button that silently
+  // does nothing is worse than no button — those students should use
+  // Add to Home Screen instead.
+  window.AIMEDS_FS_SUPPORTED = !!(
+    document.fullscreenEnabled || document.webkitFullscreenEnabled
+  );
+
+  window.aimedsToggleFullscreen = function () {
+    var el = document.documentElement;
+    var isFull = document.fullscreenElement || document.webkitFullscreenElement;
+    try {
+      if (isFull) {
+        if (document.exitFullscreen) { document.exitFullscreen(); }
+        else if (document.webkitExitFullscreen) { document.webkitExitFullscreen(); }
+      } else {
+        if (el.requestFullscreen) { el.requestFullscreen(); }
+        else if (el.webkitRequestFullscreen) { el.webkitRequestFullscreen(); }
+      }
+    } catch (e) {
+      // A refused request must never break the game; the player simply stays
+      // windowed.
+    }
+    // Godot lays out from the viewport size, and the resize event can lag the
+    // transition — nudge it twice, as reveal() does after sign-in.
+    setTimeout(function () { window.dispatchEvent(new Event("resize")); }, 60);
+    setTimeout(function () { window.dispatchEvent(new Event("resize")); }, 400);
+  };
+
+  // --- Name prompt for iOS ---------------------------------------------
+  //
+  // WHY THIS EXISTS
+  // Godot draws its LineEdit into the <canvas>. iOS Safari only raises the
+  // on-screen keyboard when a REAL DOM input takes focus, so on iPhone and iPad
+  // the name field could be tapped but never typed into — every iOS student
+  // ended up with no nickname. Android Chrome is more permissive, which is why
+  // it worked there.
+  //
+  // Godot calls window.aimedsPromptName({...}) and then polls the two globals
+  // below. Kept deliberately dumb: no callbacks into the engine, because a
+  // failed callback would leave the game waiting forever.
+  window.AIMEDS_NAME_STATE = "";
+  window.AIMEDS_NAME_VALUE = "";
+
+  window.aimedsPromptName = function (opts) {
+    opts = opts || {};
+    window.AIMEDS_NAME_STATE = "open";
+    window.AIMEDS_NAME_VALUE = "";
+
+    var wrap = document.createElement("div");
+    wrap.setAttribute("style",
+      "position:fixed;inset:0;z-index:2147483647;display:flex;" +
+      "align-items:center;justify-content:center;background:rgba(4,9,18,.86);" +
+      "font-family:system-ui,-apple-system,'Helvetica Neue',sans-serif;padding:20px;");
+
+    var card = document.createElement("div");
+    card.setAttribute("style",
+      "width:100%;max-width:420px;background:#0b1526;border:2px solid #2f6f86;" +
+      "border-radius:12px;padding:22px;box-sizing:border-box;");
+
+    var h = document.createElement("div");
+    h.textContent = opts.title || "What should we call you?";
+    h.setAttribute("style", "color:#7fd8e6;font-size:20px;font-weight:700;text-align:center;margin-bottom:6px;");
+
+    var sub = document.createElement("div");
+    sub.textContent = opts.subtitle || "";
+    sub.setAttribute("style", "color:#93a7bd;font-size:14px;text-align:center;margin-bottom:16px;line-height:1.5;");
+
+    var input = document.createElement("input");
+    input.type = "text";
+    input.value = opts.value || "";
+    input.placeholder = opts.placeholder || "";
+    input.maxLength = opts.maxLength || 24;
+    input.autocapitalize = "words";
+    input.autocomplete = "off";
+    // font-size MUST stay >= 16px: below that, iOS Safari zooms the whole page
+    // when the field takes focus and the canvas is left scrolled and cropped.
+    input.setAttribute("style",
+      "width:100%;box-sizing:border-box;font-size:18px;padding:12px 14px;" +
+      "border-radius:8px;border:2px solid #3f8fa6;background:#071120;color:#dceaf2;" +
+      "text-align:center;outline:none;");
+
+    var row = document.createElement("div");
+    row.setAttribute("style", "display:flex;gap:10px;margin-top:16px;");
+
+    function mkBtn(label, primary) {
+      var b = document.createElement("button");
+      b.textContent = label;
+      b.setAttribute("style",
+        "flex:1;font-size:16px;padding:12px;border-radius:8px;cursor:pointer;" +
+        "border:2px solid " + (primary ? "#a9c9c2" : "#3f5a6b") + ";" +
+        "background:" + (primary ? "#b8d4cd" : "#0e1a2b") + ";" +
+        "color:" + (primary ? "#08131b" : "#c3d4e0") + ";font-weight:600;");
+      return b;
+    }
+    var cancel = mkBtn(opts.cancelText || "Cancel", false);
+    var ok = mkBtn(opts.okText || "Continue", true);
+
+    function close(state, value) {
+      window.AIMEDS_NAME_VALUE = value || "";
+      window.AIMEDS_NAME_STATE = state;
+      if (wrap.parentNode) { wrap.parentNode.removeChild(wrap); }
+    }
+    ok.addEventListener("click", function () { close("done", input.value); });
+    cancel.addEventListener("click", function () { close("cancel", ""); });
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { close("done", input.value); }
+    });
+
+    row.appendChild(cancel);
+    row.appendChild(ok);
+    card.appendChild(h);
+    card.appendChild(sub);
+    card.appendChild(input);
+    card.appendChild(row);
+    wrap.appendChild(card);
+    document.body.appendChild(wrap);
+
+    // Focus immediately: this runs inside the touch handler that reached Godot,
+    // so it still counts as a user gesture. If a browser refuses anyway, the
+    // input is visible and tappable, which always works — that fallback is the
+    // reason the field is shown rather than hidden off-screen.
+    try { input.focus(); input.select(); } catch (e) {}
+    setTimeout(function () { try { input.focus(); } catch (e) {} }, 50);
+  };
+
+  button.addEventListener("click", function () {
+    button.disabled = true;
+    errorEl.textContent = "";
+    client.auth.signInWithOAuth({
+      provider: "google",
+      // Comes back to this same page; the allow-list in Supabase's URL
+      // Configuration must contain it.
+      options: { redirectTo: window.location.href.split("#")[0] }
+    }).then(function (res) {
+      if (res && res.error) {
+        errorEl.textContent = res.error.message;
+        button.disabled = false;
+      }
+    });
+  });
+})();
+</script>
+
+</body>
+</html>
+
